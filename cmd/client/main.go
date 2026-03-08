@@ -19,6 +19,7 @@ import (
 	"github.com/miekg/dns"
 )
 
+// cc
 func readLines(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {

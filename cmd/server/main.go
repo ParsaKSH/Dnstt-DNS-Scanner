@@ -17,6 +17,7 @@ import (
 	"github.com/miekg/dns"
 )
 
+// cc
 type Server struct {
 	cfg   config.Config
 	mu    sync.RWMutex
