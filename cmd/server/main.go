@@ -21,7 +21,7 @@ import (
 type Server struct {
 	cfg      config.Config
 	mu       sync.RWMutex
-	valid    map[string]net.IP // subdomain → response IP
+	valid    map[string]net.IP
 	mapSize  int
 	totalReq int64
 	matchReq int64
@@ -34,15 +34,13 @@ func NewServer(cfg config.Config) *Server {
 	}
 }
 
-// regenerateWindow rebuilds the valid subdomain map for the current time window.
 func (s *Server) regenerateWindow() {
 	now := generator.CurrentUTCSecond()
-	// Keep subdomains valid for timeout + 5s buffer for clock drift and resolver delay
 	timeoutSecs := int64(s.cfg.TimeoutMs+999)/1000 + 5
 	total := generator.SubdomainsPerSecond(s.cfg.Concurrency, s.cfg.QueryPerSec)
 
-	newValid := make(map[string]net.IP, int(timeoutSecs+1)*total)
-	for sec := now - timeoutSecs; sec <= now+2; sec++ { // also generate 2 seconds into future
+	newValid := make(map[string]net.IP, int(timeoutSecs+3)*total)
+	for sec := now - timeoutSecs; sec <= now+2; sec++ {
 		for i := 0; i < total; i++ {
 			sub := generator.GenerateSubdomain(s.cfg.Seed, sec, i)
 			ip := generator.GenerateResponseIP(s.cfg.Seed, sec, i)
@@ -56,23 +54,29 @@ func (s *Server) regenerateWindow() {
 	s.mu.Unlock()
 }
 
-// handleDNS processes incoming DNS queries.
-func (s *Server) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
-	msg := new(dns.Msg)
-	msg.SetReply(r)
-	msg.Authoritative = true
-	msg.RecursionAvailable = false
-
+func (s *Server) handlePacket(conn net.PacketConn, addr net.Addr, buf []byte) {
 	atomic.AddInt64(&s.totalReq, 1)
 
-	for _, q := range r.Question {
-		src := w.RemoteAddr().String()
+	// Parse incoming DNS message
+	req := new(dns.Msg)
+	if err := req.Unpack(buf); err != nil {
+		log.Printf("[ERROR] Failed to unpack DNS message from %s: %v", addr, err)
+		return
+	}
+
+	// Build response
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Authoritative = true
+	resp.RecursionAvailable = false
+
+	for _, q := range req.Question {
+		src := addr.String()
 		if host, _, err := net.SplitHostPort(src); err == nil {
 			src = host
 		}
 
 		if q.Qtype != dns.TypeA {
-			log.Printf("[SKIP] non-A query type=%d name=%s from %s", q.Qtype, q.Name, src)
 			continue
 		}
 
@@ -84,7 +88,6 @@ func (s *Server) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 		s.mu.RLock()
 		ip, found := s.valid[subdomain]
-		mapSize := s.mapSize
 		s.mu.RUnlock()
 
 		if found {
@@ -97,26 +100,32 @@ func (s *Server) handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 				},
 				A: ip,
 			}
-			msg.Answer = append(msg.Answer, rr)
+			resp.Answer = append(resp.Answer, rr)
 			atomic.AddInt64(&s.matchReq, 1)
 			log.Printf("[HIT]  %s → %s from %s", subdomain, ip, src)
 		} else {
-			log.Printf("[MISS] subdomain=%s NOT in valid map (map_size=%d) from %s", subdomain, mapSize, src)
+			log.Printf("[MISS] subdomain=%s NOT in valid map (map_size=%d) from %s", subdomain, s.mapSize, src)
 		}
 	}
 
-	if len(msg.Answer) == 0 {
-		msg.Rcode = dns.RcodeNameError
+	if len(resp.Answer) == 0 {
+		resp.Rcode = dns.RcodeNameError
 	}
 
-	if err := w.WriteMsg(msg); err != nil {
-		log.Printf("[ERROR] WriteMsg failed: %v", err)
+	// Pack and send response
+	out, err := resp.Pack()
+	if err != nil {
+		log.Printf("[ERROR] Failed to pack DNS response: %v", err)
+		return
+	}
+
+	if _, err := conn.WriteTo(out, addr); err != nil {
+		log.Printf("[ERROR] Failed to send DNS response to %s: %v", addr, err)
 	}
 }
 
 func main() {
-	// Server-specific flags (parsed before config.LoadConfig)
-	listenAddr := flag.String("listen", ":53", "Listen address (e.g. :53 or 0.0.0.0:5353)")
+	listenAddr := flag.String("listen", "0.0.0.0:53", "Listen address")
 
 	cfg := config.LoadConfig()
 	srv := NewServer(cfg)
@@ -134,7 +143,7 @@ func main() {
 	fmt.Printf("  UTC Time    : %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Printf("  UTC Unix    : %d\n\n", time.Now().UTC().Unix())
 
-	// Print sample subdomains for current second (for debugging sync)
+	// Print sample subdomains
 	utcSec := generator.CurrentUTCSecond()
 	fmt.Printf("  Sample subdomains for UTC second %d:\n", utcSec)
 	for i := 0; i < 3; i++ {
@@ -146,9 +155,7 @@ func main() {
 
 	// Initial window generation
 	srv.regenerateWindow()
-	srv.mu.RLock()
 	fmt.Printf("  Valid map size: %d subdomains\n", srv.mapSize)
-	srv.mu.RUnlock()
 
 	// Regenerate window every 500ms
 	go func() {
@@ -159,50 +166,51 @@ func main() {
 		}
 	}()
 
-	// Stats ticker - print stats every 5 seconds
+	// Stats ticker
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			total := atomic.LoadInt64(&srv.totalReq)
 			match := atomic.LoadInt64(&srv.matchReq)
-			srv.mu.RLock()
-			ms := srv.mapSize
-			srv.mu.RUnlock()
 			fmt.Printf("  [STATS] UTC=%d | requests=%d | matches=%d | map_size=%d\n",
-				generator.CurrentUTCSecond(), total, match, ms)
+				generator.CurrentUTCSecond(), total, match, srv.mapSize)
 		}
 	}()
 
-	// Register handler for our zone
-	zone := strings.ToLower(cfg.Domain) + "."
-	dns.HandleFunc(zone, srv.handleDNS)
+	// Raw UDP listener — bypass miekg/dns server entirely
+	_ = strings.ToLower // keep import
+	conn, err := net.ListenPacket("udp4", *listenAddr)
+	if err != nil {
+		log.Fatalf("[FATAL] Cannot listen on %s: %v", *listenAddr, err)
+	}
+	defer conn.Close()
 
-	// Also register catch-all for debugging
-	dns.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
-		for _, q := range r.Question {
-			log.Printf("[UNHANDLED] query for %s (type=%d) - not in zone %s", q.Name, q.Qtype, zone)
-		}
-		msg := new(dns.Msg)
-		msg.SetReply(r)
-		msg.Rcode = dns.RcodeRefused
-		w.WriteMsg(msg)
-	})
-
-	// Start DNS server
-	server := &dns.Server{Addr: *listenAddr, Net: "udp"}
-
-	// Graceful shutdown on SIGINT/SIGTERM
+	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		fmt.Println("\n  Shutting down server...")
-		server.Shutdown()
+		conn.Close()
 	}()
 
-	fmt.Printf("\n  ✓ DNS server listening on %s (zone: %s)\n\n", *listenAddr, zone)
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("[FATAL] Server error: %v", err)
+	fmt.Printf("\n  ✓ Raw UDP DNS server listening on %s\n\n", *listenAddr)
+
+	buf := make([]byte, 4096)
+	for {
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			if strings.Contains(err.Error(), "use of closed") {
+				break
+			}
+			log.Printf("[ERROR] ReadFrom: %v", err)
+			continue
+		}
+
+		// Handle each packet in a goroutine
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+		go srv.handlePacket(conn, addr, pkt)
 	}
 }
