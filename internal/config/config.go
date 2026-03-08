@@ -17,7 +17,9 @@ type Config struct {
 	PassPercent    float64 `json:"pass_percent"`
 	ListFile       string  `json:"list_file"`
 	OutputFile     string  `json:"output_file"`
-	PhaseDurations []int   `json:"phase_durations"` // durations in seconds for phases 2-5
+	PhaseDurations []int   `json:"phase_durations"` // durations in seconds for phases 2+
+	LabelCount     int     `json:"label_count"`     // number of subdomain labels (e.g. 3 → a.b.c.domain)
+	LabelLength    int     `json:"label_length"`    // chars per label (max 63)
 }
 
 // DefaultConfig returns a config with sensible defaults.
@@ -32,6 +34,8 @@ func DefaultConfig() Config {
 		ListFile:       "list.txt",
 		OutputFile:     "output.txt",
 		PhaseDurations: []int{2, 4, 8, 16},
+		LabelCount:     3,
+		LabelLength:    12,
 	}
 }
 

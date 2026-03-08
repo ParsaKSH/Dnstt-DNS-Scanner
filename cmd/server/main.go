@@ -42,7 +42,7 @@ func (s *Server) regenerateWindow() {
 	newValid := make(map[string]net.IP, int(timeoutSecs+3)*total)
 	for sec := now - timeoutSecs; sec <= now+2; sec++ {
 		for i := 0; i < total; i++ {
-			sub := generator.GenerateSubdomain(s.cfg.Seed, sec, i)
+			sub := generator.GenerateSubdomain(s.cfg.Seed, sec, i, s.cfg.LabelCount, s.cfg.LabelLength)
 			ip := generator.GenerateResponseIP(s.cfg.Seed, sec, i)
 			newValid[sub] = ip
 		}
@@ -147,7 +147,7 @@ func main() {
 	utcSec := generator.CurrentUTCSecond()
 	fmt.Printf("  Sample subdomains for UTC second %d:\n", utcSec)
 	for i := 0; i < 3; i++ {
-		sub := generator.GenerateSubdomain(cfg.Seed, utcSec, i)
+		sub := generator.GenerateSubdomain(cfg.Seed, utcSec, i, cfg.LabelCount, cfg.LabelLength)
 		ip := generator.GenerateResponseIP(cfg.Seed, utcSec, i)
 		fmt.Printf("    [%d] %s.%s → %s\n", i, sub, cfg.Domain, ip)
 	}

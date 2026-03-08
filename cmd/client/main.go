@@ -121,7 +121,7 @@ func runLivenessPhase(ctx context.Context, cfg config.Config, resolvers []string
 
 			utcSec := generator.CurrentUTCSecond()
 			subIdx := idx % subsPerSec
-			sub := generator.GenerateSubdomain(cfg.Seed, utcSec, subIdx)
+			sub := generator.GenerateSubdomain(cfg.Seed, utcSec, subIdx, cfg.LabelCount, cfg.LabelLength)
 			expectedIP := generator.GenerateResponseIP(cfg.Seed, utcSec, subIdx)
 			fqdn := generator.FQDN(sub, cfg.Domain)
 
@@ -220,7 +220,7 @@ func runStressPhase(ctx context.Context, cfg config.Config, resolvers []string, 
 						}
 
 						idx := slot*cfg.QueryPerSec + q
-						sub := generator.GenerateSubdomain(cfg.Seed, utcSec, idx)
+						sub := generator.GenerateSubdomain(cfg.Seed, utcSec, idx, cfg.LabelCount, cfg.LabelLength)
 						expectedIP := generator.GenerateResponseIP(cfg.Seed, utcSec, idx)
 						fqdn := generator.FQDN(sub, cfg.Domain)
 

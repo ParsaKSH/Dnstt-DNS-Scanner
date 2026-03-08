@@ -10,13 +10,31 @@ import (
 	"time"
 )
 
-// GenerateSubdomain creates a deterministic 16-char hex subdomain from seed, UTC second, and index.
-func GenerateSubdomain(seed string, utcSecond int64, index int) string {
-	data := fmt.Sprintf("sub:%d:%d", utcSecond, index)
-	mac := hmac.New(sha256.New, []byte(seed))
-	mac.Write([]byte(data))
-	hash := mac.Sum(nil)
-	return hex.EncodeToString(hash)[:16]
+// GenerateSubdomain creates a deterministic multi-label subdomain.
+// Returns something like "a3f8c1d9e2b0.4f71a9c3b2d1.e5f6a7b8c9d0"
+func GenerateSubdomain(seed string, utcSecond int64, index int, labelCount, labelLength int) string {
+	totalChars := labelCount * labelLength
+	hexNeeded := totalChars // hex chars needed
+
+	// Generate enough HMAC output (chain if needed)
+	var hexStr string
+	for chunk := 0; len(hexStr) < hexNeeded; chunk++ {
+		data := fmt.Sprintf("sub:%d:%d:%d", utcSecond, index, chunk)
+		mac := hmac.New(sha256.New, []byte(seed))
+		mac.Write([]byte(data))
+		hash := mac.Sum(nil)
+		hexStr += hex.EncodeToString(hash)
+	}
+
+	// Split into labels
+	labels := make([]string, labelCount)
+	for i := 0; i < labelCount; i++ {
+		start := i * labelLength
+		end := start + labelLength
+		labels[i] = hexStr[start:end]
+	}
+
+	return strings.Join(labels, ".")
 }
 
 // GenerateResponseIP creates a deterministic IP (10.x.y.z) from seed, UTC second, and index.
@@ -25,7 +43,6 @@ func GenerateResponseIP(seed string, utcSecond int64, index int) net.IP {
 	mac := hmac.New(sha256.New, []byte(seed))
 	mac.Write([]byte(data))
 	hash := mac.Sum(nil)
-	// Use 10.x.y.z range; ensure non-zero octets for valid IP
 	b1 := hash[0]
 	b2 := hash[1]
 	b3 := hash[2]
@@ -51,9 +68,8 @@ func FQDN(subdomain, domain string) string {
 }
 
 // ExtractSubdomain extracts the subdomain part from a full query name.
-// e.g., "abc123.ns1.example.com." with domain "ns1.example.com" → "abc123"
+// Handles multi-level subdomains: "a.b.c.ns1.example.com." → "a.b.c"
 func ExtractSubdomain(queryName, domain string) (string, bool) {
-	// Normalize: lowercase, remove trailing dot
 	qn := strings.ToLower(strings.TrimSuffix(queryName, "."))
 	dom := strings.ToLower(domain)
 
@@ -63,8 +79,7 @@ func ExtractSubdomain(queryName, domain string) (string, bool) {
 	}
 
 	sub := qn[:len(qn)-len(suffix)]
-	// Must be a single-level subdomain (no dots)
-	if strings.Contains(sub, ".") || sub == "" {
+	if sub == "" {
 		return "", false
 	}
 
