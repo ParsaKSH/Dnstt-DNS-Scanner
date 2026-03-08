@@ -13,10 +13,8 @@ dns-scanner-server-linux-amd64
 dns-scanner-server-linux-arm64
 dns-scanner-server-windows-amd64.exe
 dns-scanner-server-windows-arm64.exe
-server
 domainlist.txt
 list.txt
 config.json
-client
 ParsaKSH-DNSscanner
 Dns-scanner.tar.gz
